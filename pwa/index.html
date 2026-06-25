@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d10">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AutoBot">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="application-name" content="AutoBot">
+  <meta name="description" content="Open AutoBot automotive assistant in Telegram.">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon.svg">
+  <title>AutoBot</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d10;
+      --panel: #151922;
+      --text: #f7f8fb;
+      --muted: #9aa3b2;
+      --accent: #ff6b35;
+      --line: #2a303b;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+    }
+
+    main {
+      width: min(430px, 100%);
+      min-height: min(720px, calc(100vh - 48px));
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 32px;
+    }
+
+    .hero {
+      padding-top: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 34px;
+    }
+
+    .logo {
+      width: 58px;
+      height: 58px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #10141b;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    .logo img {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .name {
+      min-width: 0;
+    }
+
+    .name strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    .name span {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(40px, 12vw, 56px);
+      line-height: .95;
+      letter-spacing: 0;
+      max-width: 9ch;
+    }
+
+    .copy {
+      margin: 22px 0 0;
+      color: var(--muted);
+      font-size: 19px;
+      line-height: 1.38;
+      max-width: 24rem;
+    }
+
+    .status {
+      margin-top: 30px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #c9d0dc;
+      font-size: 15px;
+      min-height: 22px;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 6px rgba(255, 107, 53, .14);
+      flex: 0 0 auto;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 18px;
+      border-radius: 18px;
+    }
+
+    .actions {
+      display: grid;
+      gap: 12px;
+    }
+
+    a.button,
+    button {
+      width: 100%;
+      min-height: 56px;
+      border: 0;
+      border-radius: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 0 18px;
+      color: #ffffff;
+      background: var(--accent);
+      font: 700 17px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .secondary {
+      background: transparent;
+      border: 1px solid var(--line);
+      color: var(--text);
+    }
+
+    .hint {
+      margin: 14px 2px 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+      text-align: center;
+    }
+
+    footer {
+      color: #697284;
+      font-size: 12px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero" aria-label="AutoBot launcher">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <img src="./icon.svg" alt="">
+        </div>
+        <div class="name">
+          <strong>AutoBot</strong>
+          <span>AI automotive assistant</span>
+        </div>
+      </div>
+
+      <h1>Open your car assistant</h1>
+      <p class="copy">Diagnosis, parts, service search and repair guidance inside Telegram.</p>
+
+      <div class="status" id="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        <span>Opening Telegram...</span>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Open actions">
+      <div class="actions">
+        <button id="openTelegram" type="button">Open in Telegram</button>
+        <a class="button secondary" href="https://t.me/AutoSupportingBot" rel="noopener">Fallback web link</a>
+      </div>
+      <p class="hint">If Telegram does not open automatically, tap the orange button.</p>
+    </section>
+
+    <footer>AutoBot launcher</footer>
+  </main>
+
+  <script>
+    const botDomain = "AutoSupportingBot";
+    const telegramDeepLink = `tg://resolve?domain=${botDomain}`;
+    const statusText = document.querySelector("#status span:last-child");
+    const openButton = document.getElementById("openTelegram");
+
+    function openTelegram() {
+      statusText.textContent = "Opening Telegram...";
+      window.location.href = telegramDeepLink;
+      window.setTimeout(() => {
+        statusText.textContent = "If Telegram did not open, tap the button below.";
+      }, 1500);
+    }
+
+    openButton.addEventListener("click", openTelegram);
+
+    window.setTimeout(openTelegram, 350);
+  </script>
+</body>
+</html>
