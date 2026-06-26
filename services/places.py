@@ -1,7 +1,14 @@
 import logging
 import aiohttp
+from urllib.parse import quote
 from dataclasses import dataclass
+from typing import Optional
 from config import config
+from database import record_api_usage
+from services.retry import retry_async
+from services.service_categories import SERVICE_CATEGORIES
+from services.i18n import is_english
+from utils import escape_markdown, normalize_text_key
 
 logger = logging.getLogger(__name__)
 
@@ -19,24 +26,54 @@ class Place:
     place_type: str
     distance: float = 0.0
 
-PLACE_TYPES = {
-    "sto": {"type": "car_repair", "keyword": "автосервис СТО", "label": "🔧 СТО"},
-    "tire": {"type": "car_repair", "keyword": "шиномонтаж", "label": "🛞 Шиномонтаж"},
-    "parts": {"type": "car_dealer", "keyword": "автозапчасти", "label": "🔩 Запчасти"},
-    "battery": {"type": "car_repair", "keyword": "аккумулятор замена", "label": "🔋 АКБ"},
-    "gas": {"type": "gas_station", "keyword": "АЗС заправка", "label": "⛽ Заправка"},
-}
+PLACE_TYPES = SERVICE_CATEGORIES
+
+def _has_category_words(text: str, keywords: list[str]) -> bool:
+    words = text.split()
+    for keyword in keywords:
+        key = normalize_text_key(keyword)
+        if not key:
+            continue
+        if " " in key and key in text:
+            return True
+        if any(word == key or word.startswith(key) for word in words):
+            return True
+    return False
 
 def detect_category(problem: str) -> str:
-    text = problem.lower()
-    if any(w in text for w in ["шин", "колес", "прокол", "резин", "спустил"]):
+    text = normalize_text_key(problem)
+    if _has_category_words(text, ["дилер", "дилерский центр", "официальный дилер", "официальный сервис", "гарантия", "гарантийный", "dealer", "dealer center", "official dealer", "authorized dealer", "authorized service", "warranty"]):
+        return "dealer"
+    if _has_category_words(text, ["сход развал", "развал", "схождение", "тянет руль", "руль криво", "wheel alignment", "alignment", "pulls to side", "steering wheel crooked"]):
+        return "alignment"
+    if _has_category_words(text, ["шина", "шины", "шиномонтаж", "колесо", "колеса", "прокол", "резина", "спустило", "tire", "tyre", "tire shop", "puncture", "flat tire", "wheel"]):
         return "tire"
-    if any(w in text for w in ["аккумулятор", "акб", "не заводит", "заряд"]):
+    if _has_category_words(text, ["диагностика", "диагност", "ошибка", "сканер", "diagnostics", "diagnostic", "scanner", "error code"]):
+        return "diagnostics"
+    if _has_category_words(text, ["электрик", "автоэлектрик", "проводка", "генератор", "стартер", "электрика", "electrician", "auto electrician", "wiring", "alternator", "starter", "electrical"]):
+        return "electric"
+    if _has_category_words(text, ["кузов", "кузовной", "малярка", "покраска", "бампер", "вмятина", "body repair", "paint", "bumper", "dent"]):
+        return "body"
+    if _has_category_words(text, ["стекл", "стекло", "лобовое", "автостекло", "трещина стекла", "auto glass", "windshield", "glass crack"]):
+        return "glass"
+    if _has_category_words(text, ["кондиционер", "кондей", "не холодит", "фреон", "air conditioning", "a/c", "ac service", "freon", "not cold"]):
+        return "ac"
+    if _has_category_words(text, ["авторазбор", "разбор", "б у", "бу запчасти", "контрактная деталь", "salvage yard", "used parts", "used auto parts"]):
+        return "salvage"
+    if _has_category_words(text, ["аккумулятор", "акб", "не заводит", "заряд", "battery", "car battery", "dead battery"]):
         return "battery"
-    if any(w in text for w in ["запчаст", "деталь", "купить"]):
+    if _has_category_words(text, ["запчасти", "запчасть", "деталь", "купить", "parts", "part", "parts store", "buy part"]):
         return "parts"
-    if any(w in text for w in ["бензин", "топливо", "заправ"]):
+    if _has_category_words(text, ["бензин", "топливо", "заправка", "заправить", "gas", "fuel", "gas station", "refuel"]):
         return "gas"
+    if _has_category_words(text, ["мойка", "помыть", "автомойка", "car wash", "wash"]):
+        return "wash"
+    if _has_category_words(text, ["детейлинг", "полировка", "химчистка", "detailing", "polishing", "interior cleaning"]):
+        return "detailing"
+    if _has_category_words(text, ["замена масла", "масло поменять", "oil change", "change oil"]):
+        return "oil"
+    if _has_category_words(text, ["эвакуатор", "срочно", "помощь на дороге", "не могу ехать", "tow truck", "roadside assistance", "urgent", "cannot drive"]):
+        return "tow"
     return "sto"
 
 import math
@@ -48,71 +85,162 @@ def _distance(lat1, lon1, lat2, lon2) -> float:
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
     return R * 2 * math.asin(math.sqrt(a))
 
-async def _get_phone(session: aiohttp.ClientSession, place_id: str) -> str:
+def _place_location(place: dict) -> Optional[tuple[float, float]]:
+    location = place.get("geometry", {}).get("location", {})
+    place_lat = location.get("lat")
+    place_lon = location.get("lng")
+    if place_lat is None or place_lon is None:
+        return None
+    return float(place_lat), float(place_lon)
+
+async def _get_details(session: aiohttp.ClientSession, place_id: str) -> tuple[str, str]:
+    if not place_id:
+        return "Нет данных", ""
+
     params = {
         "place_id": place_id,
-        "fields": "formatted_phone_number",
+        "fields": "formatted_phone_number,formatted_address",
         "language": "ru",
         "key": config.GOOGLE_PLACES_API_KEY,
     }
+    attempts = 1
     try:
-        async with session.get(
-            DETAILS_URL,
-            params=params,
-            timeout=aiohttp.ClientTimeout(total=5)
-        ) as resp:
-            data = await resp.json()
-            return data.get("result", {}).get("formatted_phone_number", "Нет данных")
-    except Exception:
-        return "Нет данных"
+        async def action():
+            async with session.get(
+                DETAILS_URL,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                return await resp.json()
 
-async def search_places(lat: float, lon: float, category: str) -> list[Place]:
+        data, attempts = await retry_async(action, config.GOOGLE_MAX_RETRIES)
+        ok = data.get("status") in ("OK", "ZERO_RESULTS")
+        await record_api_usage(
+            provider="google",
+            operation="place_details",
+            success=ok,
+            attempts=attempts,
+            estimated_cost_usd=config.GOOGLE_PLACES_COST_PER_REQUEST,
+            error="" if ok else data.get("status", "unknown"),
+        )
+        result = data.get("result", {})
+        return (
+            result.get("formatted_phone_number", "Нет данных"),
+            result.get("formatted_address", ""),
+        )
+    except Exception as e:
+        await record_api_usage(
+            provider="google",
+            operation="place_details",
+            success=False,
+            attempts=attempts,
+            estimated_cost_usd=config.GOOGLE_PLACES_COST_PER_REQUEST,
+            error=str(e),
+        )
+        return "Нет данных", ""
+
+async def search_places(
+    lat: float,
+    lon: float,
+    category: str,
+    radius: Optional[int] = None,
+    min_rating: Optional[float] = None,
+    limit: int = 5,
+) -> list[Place]:
     cat = PLACE_TYPES.get(category, PLACE_TYPES["sto"])
-    params = {
-        "location": f"{lat},{lon}",
-        "radius": config.SEARCH_RADIUS,
-        "type": cat["type"],
-        "keyword": cat["keyword"],
-        "language": "ru",
-        "key": config.GOOGLE_PLACES_API_KEY,
-    }
+    keywords = cat.get("keywords", [cat.get("keyword", "")])
+    radius = radius or cat.get("radius", config.SEARCH_RADIUS)
+    min_rating = cat.get("min_rating", config.MIN_RATING) if min_rating is None else min_rating
 
     async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(
-                PLACES_URL,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                data = await resp.json()
-        except Exception as e:
-            logger.error(f"Places ошибка: {e}")
-            return []
-
-        if data.get("status") not in ("OK", "ZERO_RESULTS"):
-            logger.error(f"Places статус: {data.get('status')}")
-            return []
-
+        raw_results = {}
         all_places = []
-        for place in data.get("results", []):
-            rating = place.get("rating", 0)
-            if rating < config.MIN_RATING:
+
+        for keyword in keywords:
+            params = {
+                "location": f"{lat},{lon}",
+                "radius": radius,
+                "keyword": keyword,
+                "language": "ru",
+                "key": config.GOOGLE_PLACES_API_KEY,
+            }
+            if cat.get("type"):
+                params["type"] = cat["type"]
+
+            attempts = 1
+            try:
+                async def action():
+                    async with session.get(
+                        PLACES_URL,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp:
+                        return await resp.json()
+
+                data, attempts = await retry_async(action, config.GOOGLE_MAX_RETRIES)
+            except Exception as e:
+                logger.error(f"Places ошибка: {e}")
+                await record_api_usage(
+                    provider="google",
+                    operation="nearby_search",
+                    success=False,
+                    attempts=attempts,
+                    estimated_cost_usd=config.GOOGLE_PLACES_COST_PER_REQUEST,
+                    error=str(e),
+                )
+                continue
+
+            if data.get("status") not in ("OK", "ZERO_RESULTS"):
+                logger.error(f"Places статус: {data.get('status')}")
+                await record_api_usage(
+                    provider="google",
+                    operation="nearby_search",
+                    success=False,
+                    attempts=attempts,
+                    estimated_cost_usd=config.GOOGLE_PLACES_COST_PER_REQUEST,
+                    error=data.get("status", "unknown"),
+                )
+                continue
+
+            await record_api_usage(
+                provider="google",
+                operation="nearby_search",
+                success=True,
+                attempts=attempts,
+                estimated_cost_usd=config.GOOGLE_PLACES_COST_PER_REQUEST,
+            )
+
+            for place in data.get("results", []):
+                key = place.get("place_id") or f"{place.get('name', '')}:{place.get('vicinity', '')}"
+                raw_results[key] = place
+
+        max_distance_km = radius / 1000
+
+        for place in raw_results.values():
+            rating = place.get("rating", 0) or 0
+            if rating < min_rating:
+                continue
+
+            location = _place_location(place)
+            if not location:
+                continue
+            place_lat, place_lon = location
+            dist = _distance(lat, lon, place_lat, place_lon)
+            if dist > max_distance_km:
                 continue
 
             place_id = place.get("place_id", "")
-            phone = await _get_phone(session, place_id)
+            phone, formatted_address = await _get_details(session, place_id)
 
-            place_lat = place["geometry"]["location"]["lat"]
-            place_lon = place["geometry"]["location"]["lng"]
-            dist = _distance(lat, lon, place_lat, place_lon)
-
-            # 2GIS маршрут
-            route_url = f"https://2gis.ru/routeSearch/rsType/car/to/{place_lon},{place_lat}"
-            maps_url = f"https://2gis.ru/search/{place.get('name', '')}"
+            route_url = f"https://www.google.com/maps/dir/?api=1&destination={place_lat},{place_lon}&travelmode=driving"
+            maps_url = f"https://www.google.com/maps/search/?api=1&query={place_lat},{place_lon}"
+            if place_id:
+                route_url += f"&destination_place_id={quote(place_id)}"
+                maps_url += f"&query_place_id={quote(place_id)}"
 
             all_places.append(Place(
                 name=place.get("name", "Без названия"),
-                address=place.get("vicinity", "Адрес неизвестен"),
+                address=formatted_address or place.get("vicinity", "Адрес неизвестен"),
                 rating=rating,
                 phone=phone,
                 maps_url=maps_url,
@@ -121,8 +249,36 @@ async def search_places(lat: float, lon: float, category: str) -> list[Place]:
                 distance=dist,
             ))
 
-        # 2 лучших по рейтингу
-        by_rating = sorted(all_places, key=lambda p: p.rating, reverse=True)[:2]
+        if not all_places and min_rating:
+            for place in raw_results.values():
+                location = _place_location(place)
+                if not location:
+                    continue
+                place_lat, place_lon = location
+                dist = _distance(lat, lon, place_lat, place_lon)
+                if dist > max_distance_km:
+                    continue
+                place_id = place.get("place_id", "")
+                phone, formatted_address = await _get_details(session, place_id)
+                route_url = f"https://www.google.com/maps/dir/?api=1&destination={place_lat},{place_lon}&travelmode=driving"
+                maps_url = f"https://www.google.com/maps/search/?api=1&query={place_lat},{place_lon}"
+                if place_id:
+                    route_url += f"&destination_place_id={quote(place_id)}"
+                    maps_url += f"&query_place_id={quote(place_id)}"
+                all_places.append(Place(
+                    name=place.get("name", "Без названия"),
+                    address=formatted_address or place.get("vicinity", "Адрес неизвестен"),
+                    rating=place.get("rating", 0) or 0,
+                    phone=phone,
+                    maps_url=maps_url,
+                    route_url=route_url,
+                    place_type=cat["label"],
+                    distance=dist,
+                ))
+
+        # 3 лучших по рейтингу
+
+        by_rating = sorted(all_places, key=lambda p: p.rating, reverse=True)[:3]
 
         # 3 ближайших
         by_distance = sorted(all_places, key=lambda p: p.distance)[:3]
@@ -135,26 +291,41 @@ async def search_places(lat: float, lon: float, category: str) -> list[Place]:
                 seen.add(place.name)
                 result.append(place)
 
-        return result[:5]
+        return result[:limit]
 
-def format_places_message(places: list[Place], category: str, location_name: str = "") -> str:
+def format_places_message(places: list[Place], category: str, location_name: str = "", language_code: str = "") -> str:
+    english = is_english(language_code)
     if not places:
-        return "К сожалению, подходящих сервисов рядом не нашлось. Попробуйте другой адрес."
+        if english:
+            return (
+                "I could not find suitable places nearby.\n\n"
+                "You can increase the radius, lower the rating filter, choose another category, "
+                "or enter another address."
+            )
+        return "К сожалению, подходящих сервисов рядом не нашлось.\n\nМожно увеличить радиус, снизить минимальный рейтинг, выбрать другую категорию или ввести другой адрес."
 
     cat = PLACE_TYPES.get(category, PLACE_TYPES["sto"])
-    lines = [f"Нашёл {cat['label']} рядом с {location_name}:\n"]
+    label = cat.get("label_en") if english else cat["label"]
+    if english:
+        lines = [f"Found {label} near {escape_markdown(location_name)}:\n"]
+    else:
+        lines = [f"Нашёл {label} рядом с {escape_markdown(location_name)}:\n"]
 
     for i, place in enumerate(places, 1):
         dist_text = f"{place.distance:.1f} км"
+        map_label = "Open on map" if english else "Открыть на карте"
+        route_label = "Build route" if english else "Проложить маршрут"
         lines.append(
-            f"{i}. *{place.name}*\n"
-            f"   ⭐ {place.rating} | 📏 {dist_text}\n"
-            f"   📍 {place.address}\n"
-            f"   📞 {place.phone}\n"
-            f"   [Открыть в 2ГИС]({place.maps_url})\n"
-            f"   [Проложить маршрут]({place.route_url})\n"
+            f"{i}. *{escape_markdown(place.name)}*\n"
+            f"   ⭐ {escape_markdown(place.rating)} | 📏 {escape_markdown(dist_text)}\n"
+            f"   📍 {escape_markdown(place.address)}\n"
+            f"   📞 {escape_markdown(place.phone)}\n"
+            f"   [{map_label}]({place.maps_url})\n"
+            f"   [{route_label}]({place.route_url})\n"
         )
 
-    lines.append("_Рейтинг 4.0+ | Маршруты через 2ГИС_ 🗺")
+    if category == "tow":
+        lines.append("_Searching within up to 12 km. For urgent cases, call several places and do not continue driving if it is unsafe._" if english else "_Ищу в радиусе до 12 км. Для срочных случаев звоните в несколько мест подряд и не продолжайте движение, если это опасно._")
+    else:
+        lines.append("_Searching near your location. I show rating 4.0+ first; if there are none, I show the nearest found places._ 🗺" if english else "_Ищу рядом с вашей геолокацией. Сначала показываю рейтинг 4.0+, если таких нет — ближайшие найденные места._ 🗺")
     return "\n".join(lines)
-

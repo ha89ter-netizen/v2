@@ -16,3 +16,14 @@ and add it to the home screen.
 
 On tap, the launcher tries to open Telegram directly. If the OS blocks the deep
 link, the user can tap the fallback button.
+
+Public launcher:
+
+https://ha89ter-netizen.github.io/v2/pwa/
+
+User installation guide:
+
+- iPhone: Safari -> Share -> Add to Home Screen.
+- Android: Chrome -> menu -> Install app or Add to Home screen.
+
+Full user-facing instructions are in `pwa/INSTALL.md`.

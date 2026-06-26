@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+.env
+autobot.db
+data
+backups
+.DS_Store

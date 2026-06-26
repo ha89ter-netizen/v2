@@ -179,6 +179,31 @@
       text-align: center;
     }
 
+    .install {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.42;
+    }
+
+    .install strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.2;
+    }
+
+    .install p {
+      margin: 0;
+    }
+
+    .install p + p {
+      margin-top: 7px;
+    }
+
     footer {
       color: #697284;
       font-size: 12px;
@@ -214,6 +239,11 @@
         <a class="button secondary" href="https://t.me/AutoSupportingBot" rel="noopener">Fallback web link</a>
       </div>
       <p class="hint">If Telegram does not open automatically, tap the orange button.</p>
+      <div class="install" aria-label="Install instructions">
+        <strong>Add AutoBot to your phone</strong>
+        <p>iPhone: open this page in Safari, tap Share, then Add to Home Screen.</p>
+        <p>Android: open this page in Chrome, tap menu, then Install app or Add to Home screen.</p>
+      </div>
     </section>
 
     <footer>AutoBot launcher</footer>
